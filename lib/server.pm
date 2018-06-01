@@ -147,7 +147,6 @@ sub __move__meta {
             test        => sub {
                 my $data = shift;
 
-
                 die "Not a valid speed" unless $data && $data =~ /^\d+$/ && $data >= -100 && $data <= 100;
             },
         },
@@ -200,6 +199,73 @@ sub __move {
         distance => $distance
     };
 }
+
+sub __turn__meta {
+    return {
+        description => 'Turn the robot some amount based on motor degrees and at some speed',
+        degrees => {
+            description => 'How far, in degrees of rotation of the motor, to turn the robot.',
+            test        => sub {
+                my $data = shift;
+
+                die "Not valid amount of degrees" unless $data && $data =~ /^\d+$/;
+            },
+        },
+        speed => {
+            description => 'How fast, between -100 and 100, to move the robot.',
+            test        => sub {
+                my $data = shift;
+
+                die "Not a valid speed" unless $data && $data =~ /^\d+$/ && $data >= -100 && $data <= 100;
+            },
+        },
+    };
+}
+
+sub __turn {
+    my $self    = shift;
+    my $request = shift;
+
+    my $distance = {};
+    my $speed = $request->{'speed'}; # alternate speed between positive and negative values for each motor
+    for my $sn ( @{ $self->_get_large_motors } ) {
+        # set the speed
+        $self->_call_ev3(set_tacho_duty_cycle_sp => [ $sn, $speed ]);
+
+        # disable ramp up and ramp down
+        $self->_call_ev3(set_tacho_ramp_up_sp => [ $sn, 0 ]);
+        $self->_call_ev3(set_tacho_ramp_down_sp => [ $sn, 0 ]);
+
+        my $tacho_count = $self->_degrees_to_tacho_count($request->{'degrees'});
+
+        my $start_pos   = $self->_call_ev3(get_tacho_position => [])->[0];
+        my $current_pos = $start_pos;
+
+        # set target relative position
+        $self->_call_ev3(set_tacho_position_sp => [ $sn, $tacho_count ]);
+
+        # run command
+        $self->_call_ev3(set_tacho_command_inx => [ $sn, $ev3::TACHO_RUN_TO_REL_POS ]);
+
+        for (my $loop = 0; $loop < $tacho_count / 2; $loop++) {
+            sleep(0.5);
+            $current_pos = $self->_call_ev3(get_tacho_position => [])->[0];
+            last if $current_pos < $start_pos + $tacho_count;
+        }
+
+        my $end_pos = $self->_call_ev3(get_tacho_position => [])->[0];
+
+        $distance->{$sn} = $end_pos - $start_pos;
+
+        $speed = -$speed;
+    }
+
+    return {
+        distance => $distance
+    };
+}
+
+
 
 sub __stop__meta {
     return {
