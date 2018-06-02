@@ -3,62 +3,90 @@ package server;
 use strict;
 use warnings;
 
-use parent qw(Net::Server::PreForkSimple);
+#use parent qw(Net::Server::PreForkSimple);
+use parent qw(Net::Server::HTTP);
 
+use CGI::Lite;
 use Data::Debug;
 use JSON::XS;
+
+use ev3;
 
 sub new {
     my $class = shift;
     my $args  = ref $_[0] eq 'HASH' ? $_[0] : {};
+    $args->{'port'} //= 8080;
 
-    return bless $args, $class;
+    my $self = bless $args, $class;
+
+    $self->_build_routing;
+
+    return $self;
 }
 
-sub process_request {
+sub is_listening { return shift->{'__listening'} }
+
+sub json { return JSON::XS->new->pretty->utf8->canonical; }
+
+sub run {
     my $self = shift;
 
-    my $data;
+    $self->{'__listening'} = 1;
+
+    return $self->SUPER::run({
+        port => $self->{'port'},
+    });
+}
+
+sub process_http_request {
+    my $self = shift;
+    my $args = shift || {}; # if we are manually calling this method
+
+    my ($path, $method, $form);
     if ($self->is_listening) {
-        $data = <STDIN>;
+        $path   = $ENV{'PATH_INFO'};
+        $method = $ENV{'REQUEST_METHOD'};
+        $form   = CGI::Lite->new->parse_form_data();
     } else {
-        $data = shift;
+        $path   = '/' . $args->{'method'};
+        $method = '';
+        $form   = $args;
     }
 
-    my $request = eval { decode_json($data) };
-
     my $response;
-    if ($request) {
-        if ( eval { $self->validate($request) } ) {
-            $response = $self->run_method($request->{'method'} => $request);
-        } else {
-            $response = {
-                success => 0,
-                error   => $@ || 'Invalid request',
-                request => $request,
-            };
-        }
-    } else {
+    if (my $route = $self->routes->{$path}) {
+        $response = $route->($form);
+    }
+    else {
         $response = {
             success => 0,
-            error   => "Parsing Error, $@",
-            request => $request,
+            error   => 'Invalid request',
         };
     }
 
-    $response = encode_json($response);
+    $response->{'_request'} //= {
+        path   => $path,
+        method => $method,
+        env    => \%ENV,
+        params => $form,
+    };
+
+    $response = $self->json->encode($response);
 
     if ($self->is_listening) {
+        print "Content-type: text/json\n\n";
         print $response;
     }
 
     return $response;
 }
 
+sub routes { shift->{'routes'} }
+
 sub validate {
     my $self    = shift;
     my $request = shift;
-    my $method  = ref $request eq 'HASH' ? $request->{'method'} : undef;
+    my $method  = ref $request eq 'HASH' && $request->{'method'} ? $request->{'method'} : shift;
 
     die "Not a valid method\n" unless $method && $self->can("__${method}");
 
@@ -94,25 +122,23 @@ sub run_method {
 
         if (ref $resp) {
             $resp->{'success'} = 1;
-            $resp->{'request'} = $request;
 
             return $resp;
         } else {
             return {
                 success => 0,
                 error   => $resp,
-                request => $request,
             };
         }
-
     }
 
     return {
         success => 0,
         error   => 'Method not found',
-        request => $request,
     };
 }
+
+####---- request methods ----####
 
 sub __hello__meta {
     return {
@@ -129,6 +155,94 @@ sub __hello {
     };
 }
 
+sub __set_left_motor__meta {
+    return {
+        description => 'Set the left motor for movement control',
+        port        => {
+            description => 'The port number the left motor is connected to',
+            test        => sub {
+                my $data = shift;
+
+                die "Not a valid port" unless defined $data && $data =~ /^\d$/;
+            },
+        },
+    };
+}
+
+sub __set_left_motor {
+    my $self    = shift;
+    my $request = shift;
+
+    my $fh;
+    open $fh, '>', $self->_left_motor_file || die 'Could not open left motor file for writing';
+    print $fh $request->{'port'};
+    close $fh;
+
+    return {
+        l_motor => $request->{'port'},
+    };
+}
+
+sub __set_right_motor__meta {
+    return {
+        description => 'Set the right motor for movement control',
+        port        => {
+            description => 'The port number the right motor is connected to',
+            test        => sub {
+                my $data = shift;
+
+                die "Not a valid port" unless defined $data && $data =~ /^\d$/;
+            },
+        },
+    };
+}
+
+sub __set_right_motor {
+    my $self    = shift;
+    my $request = shift;
+
+    my $fh;
+    open $fh, '>', $self->_right_motor_file || die 'Could not open right motor file for writing';
+    print $fh $request->{'port'};
+    close $fh;
+
+    return {
+        r_motor => $request->{'port'},
+    };
+}
+
+sub __position__meta {
+    my $self = shift;
+
+    my ($r_motor, $l_motor) = @{ $self->_get_large_motors };
+    $r_motor = defined $r_motor ? $r_motor : -1;
+    $l_motor = defined $l_motor ? $l_motor : -1;
+
+    return {
+        description => 'Get motor position',
+        port        => {
+            description => 'The port number the motor is connected to',
+            test        => sub {
+                my $data = shift;
+
+                die "Not a valid port" unless
+                    defined $data &&
+                    $data =~ /^\d$/ &&
+                    ( $data == $r_motor || $data == $l_motor );
+            },
+        },
+    };
+}
+
+sub __position {
+    my $self    = shift;
+    my $request = shift;
+
+    return {
+        position => $self->_call_ev3(get_tacho_position => [ $request->{'port'} ])->[0],
+    };
+}
+
 sub __move__meta {
     return {
         description => 'Move the robot forward some distance at some speed',
@@ -137,7 +251,7 @@ sub __move__meta {
             test        => sub {
                 my $data = shift;
 
-                die "Not valid amount of degrees" unless $data && $data =~ /^[-]?\d+$/;
+                die "Not valid amount of degrees" unless defined $data && $data =~ /^[-]?\d+$/;
 
                 die "Not valid amount of degrees" unless $data == -1 || $data >= 0;
             },
@@ -157,7 +271,7 @@ sub __move {
     my $self    = shift;
     my $request = shift;
 
-    my $distance = {};
+    my $position = {};
     for my $sn ( @{ $self->_get_large_motors } ) {
         # set the speed
         $self->_call_ev3(set_tacho_duty_cycle_sp => [ $sn, $request->{'speed'} ]);
@@ -166,37 +280,27 @@ sub __move {
         $self->_call_ev3(set_tacho_ramp_up_sp => [ $sn, 0 ]);
         $self->_call_ev3(set_tacho_ramp_down_sp => [ $sn, 0 ]);
 
+        # track the starting position of each motor
+        $position->{$sn} = $self->_call_ev3(get_tacho_position => [ $sn ])->[0];
+
         if ($request->{'degrees'} == -1) {
             # run command
             $self->_call_ev3(set_tacho_command_inx => [ $sn, $ev3::TACHO_RUN_FOREVER ]);
 
-            $distance->{$sn} = 'nil'; # since we move until a stop request we don't know the distance
+            $position->{$sn} = 'nil'; # since we move until a stop request we don't know the distance
         } else {
             my $tacho_count = $self->_degrees_to_tacho_count($request->{'degrees'});
-
-            my $start_pos   = $self->_call_ev3(get_tacho_position => [])->[0];
-            my $current_pos = $start_pos;
 
             # set target relative position
             $self->_call_ev3(set_tacho_position_sp => [ $sn, $tacho_count ]);
 
             # run command
             $self->_call_ev3(set_tacho_command_inx => [ $sn, $ev3::TACHO_RUN_TO_REL_POS ]);
-
-            for (my $loop = 0; $loop < $tacho_count / 2; $loop++) {
-                sleep(0.5);
-                $current_pos = $self->_call_ev3(get_tacho_position => [])->[0];
-                last if $current_pos < $start_pos + $tacho_count;
-            }
-
-            my $end_pos = $self->_call_ev3(get_tacho_position => [])->[0];
-
-            $distance->{$sn} = $end_pos - $start_pos;
         }
     }
 
     return {
-        distance => $distance
+        position => $position,
     };
 }
 
@@ -208,7 +312,7 @@ sub __turn__meta {
             test        => sub {
                 my $data = shift;
 
-                die "Not valid amount of degrees" unless $data && $data =~ /^\d+$/;
+                die "Not valid amount of degrees" unless defined $data && $data =~ /^\d+$/;
             },
         },
         speed => {
@@ -216,7 +320,7 @@ sub __turn__meta {
             test        => sub {
                 my $data = shift;
 
-                die "Not a valid speed" unless $data && $data =~ /^\d+$/ && $data >= -100 && $data <= 100;
+                die "Not a valid speed" unless defined $data && $data =~ /^\d+$/ && $data >= -100 && $data <= 100;
             },
         },
     };
@@ -226,7 +330,7 @@ sub __turn {
     my $self    = shift;
     my $request = shift;
 
-    my $distance = {};
+    my $position = {};
     my $speed = $request->{'speed'}; # alternate speed between positive and negative values for each motor
     for my $sn ( @{ $self->_get_large_motors } ) {
         # set the speed
@@ -236,10 +340,10 @@ sub __turn {
         $self->_call_ev3(set_tacho_ramp_up_sp => [ $sn, 0 ]);
         $self->_call_ev3(set_tacho_ramp_down_sp => [ $sn, 0 ]);
 
-        my $tacho_count = $self->_degrees_to_tacho_count($request->{'degrees'});
+        # track the starting position of each motor
+        $position->{$sn} = $self->_call_ev3(get_tacho_position => [ $sn ])->[0];
 
-        my $start_pos   = $self->_call_ev3(get_tacho_position => [])->[0];
-        my $current_pos = $start_pos;
+        my $tacho_count = $self->_degrees_to_tacho_count($request->{'degrees'});
 
         # set target relative position
         $self->_call_ev3(set_tacho_position_sp => [ $sn, $tacho_count ]);
@@ -247,25 +351,14 @@ sub __turn {
         # run command
         $self->_call_ev3(set_tacho_command_inx => [ $sn, $ev3::TACHO_RUN_TO_REL_POS ]);
 
-        for (my $loop = 0; $loop < $tacho_count / 2; $loop++) {
-            sleep(0.5);
-            $current_pos = $self->_call_ev3(get_tacho_position => [])->[0];
-            last if $current_pos < $start_pos + $tacho_count;
-        }
-
-        my $end_pos = $self->_call_ev3(get_tacho_position => [])->[0];
-
-        $distance->{$sn} = $end_pos - $start_pos;
-
+        # since we are turning speed must be negated so that the next motors speed is opposite this motor's speed
         $speed = -$speed;
     }
 
     return {
-        distance => $distance
+        position => $position,
     };
 }
-
-
 
 sub __stop__meta {
     return {
@@ -285,17 +378,97 @@ sub __stop {
     return {};
 }
 
-sub run {
+####---- private subs ----####
+
+sub _build_routing {
     my $self = shift;
 
-    my $retval = $self->SUPER::run(@_);
+    my $method_map = $self->_map_request_endpoints;
 
-    $self->{'__listing'}  = 1 if $retval;
+    $self->{'routes'}{'/'} = sub {
+        my $form = shift || {};
 
-    return $retval;
+        my %methods;
+
+        for my $method (keys %$method_map) {
+            $methods{"/$method"} = $method_map->{$method}->{'meta'};
+        }
+
+        $methods{"/"} = {
+            description => "Returns the list of available methods.",
+        };
+
+        return \%methods;
+    };
+
+    for my $method (keys %$method_map) {
+        $self->{'routes'}{"/$method"} = sub {
+            my $form = shift || {};
+
+            my $response;
+
+            if ( eval { $self->validate($form => $method) } ) {
+                $response = $self->run_method($method => $form);
+            } else {
+                $response = {
+                    success => 0,
+                    error   => $@ || 'Invalid request',
+                };
+            }
+
+            return $response;
+        };
+    }
 }
 
-sub is_listening { return shift->{'__listening'} }
+sub _map_request_endpoints {
+    my $self = shift;
+
+    my %map;
+
+    NO_STRICT_REFS: {
+        no strict 'refs';
+
+        for my $symbol (keys %{__PACKAGE__ . '::'}) {
+            next unless $symbol =~ /^(.+)__meta$/;
+
+            my $request_sub = $1;
+            my $meta_sub    = $symbol;
+            my $request     = $request_sub;
+            $request        =~ s/^__//;
+
+            my $request_code = *{${__PACKAGE__ . '::'}{$request_sub}}{CODE};
+            my $meta_code    = *{${__PACKAGE__ . '::'}{$meta_sub}}{CODE};
+
+            next unless $request_code && $meta_code;
+
+            $map{$request} = {
+                code => $request_code,
+                meta => $self->_scrub_meta($self->$meta_code),
+            };
+        }
+    }
+
+    return \%map;
+}
+
+sub _scrub_meta {
+    my $self = shift;
+    my $data = shift;
+
+    return $data unless ref $data eq 'HASH';
+
+    for my $key (keys %$data) {
+        if (ref $data->{$key} && ref $data->{$key} ne 'HASH') {
+            delete $data->{$key};
+            next;
+        }
+
+        $data->{$key} = $self->_scrub_meta($data->{$key});
+    }
+
+    return $data;
+}
 
 sub _call_ev3 {
     my $self   = shift;
@@ -327,21 +500,38 @@ sub _call_ev3 {
     }
 }
 
+sub _left_motor_file { './LEFTMOTOR.txt' }
+
+sub _right_motor_file { './RIGHTMOTOR.txt' }
+
+sub _has_large_motors_set {
+    my $self = shift;
+
+    return defined $self->_get_large_motors->[0] && defined $self->_get_large_motors->[1];
+}
+
 sub _get_large_motors {
     my $self = shift;
 
-    return $self->{'tacho_lg_motors'} //= do {
-        my @motors;
+    return [] unless -f $self->_left_motor_file && -f $self->_right_motor_file;
 
-        for ( my $sn = 0; $sn < $ev3::DESC_LIMIT; $sn++ ) {
-            my $type = $self->_call_ev3(ev3_tacho_desc_type_inx => [ $sn ])->[0];
+    return $self->{'_large_motors'} //= do {
+        my ($l_motor, $r_motor);
 
-            if ( $type == $ev3::LEGO_EV3_L_MOTOR) {
-                push @motors, $sn;
-            }
-        }
+        my $fh;
+        open $fh, '<', $self->_left_motor_file || die 'Could not open left motor file for reading';
+        $l_motor = <$fh>;
+        close $fh;
 
-        \@motors;
+        die 'Left motor not defined' unless defined $l_motor;
+
+        open $fh, '<', $self->_right_motor_file || die 'Could not open right motor file for reading';
+        $r_motor = <$fh>;
+        close $fh;
+
+        die 'Right motor not defined' unless defined $r_motor;
+
+        [ $l_motor, $r_motor ];
     };
 }
 
