@@ -221,8 +221,7 @@ sub __position {
     my $self    = shift;
     my $request = shift;
 
-    my $position;
-    ev3::get_tacho_position($request->{'sequence_number'}, $position);
+    my $position = ev3::get_tacho_position($request->{'sequence_number'});
 
     return {
         position => $position,
