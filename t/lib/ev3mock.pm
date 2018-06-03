@@ -96,11 +96,11 @@ sub _mock_defaults {
         },
 
         ev3_tacho_type => sub {
-            return 'type';
+            return 'lego-ev3-l-motor';
         },
 
         ev3_tacho_port_name => sub {
-            return 'name';
+            return '<unknown>';
         },
     };
 }

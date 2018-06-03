@@ -17,7 +17,7 @@ use JSON::XS;
 
 use ev3mock;
 
-use Test::More tests => 19;
+use Test::More tests => 21;
 
 my $ev3mock = ev3mock->new();
 
@@ -25,9 +25,15 @@ use_ok('server');
 
 my $server = server->new();
 
+ok($server->can('new'), 'server can instantiate');
+
 ok($server, 'we have a server obj');
 
 ok($server->can('run'), 'server can run');
+
+ok(!$server->is_listening, 'we are not listending for requests because this is a test');
+
+isa_ok($server->json, 'JSON::XS', '->json returns object');
 
 my $resp = decode_json($server->process_http_request({
     method => "shouldfail",
@@ -80,11 +86,6 @@ MOVE: {
         method => "move"
     }));
 
-    $resp = decode_json($server->process_http_request({
-        method  => "move",
-        speed   => 200,
-    }));
-
     ok(!$resp->{'success'}, 'move fails with invalid speed');
 
     my $pos_responses = [ 0, 45, 90, 100 ];
@@ -98,7 +99,7 @@ MOVE: {
     }));
 
     ok($resp->{'success'}, 'move is successful when valid amount of degrees is passed');
-    ok(defined $resp->{'position'}, 'move, when successful, returns the starting position of each motor');
+    ok(defined $resp->{'motors'}, 'move, when successful, returns the starting position of each motor');
 
     $ev3mock->reset_mock('get_tacho_position'); # reset get_tacho_position back to default
 }
@@ -116,13 +117,6 @@ TURN: {
         method => "turn",
     }));
 
-    ok(!$resp->{'success'}, 'turn fails without degrees');
-
-    $resp = decode_json($server->process_http_request({
-        method  => "turn",
-        speed   => 200,
-    }));
-
     ok(!$resp->{'success'}, 'turn fails with invalid speed');
 
     my $pos_responses = [ 0, 45, 90, 100 ];
@@ -137,7 +131,7 @@ TURN: {
     }));
 
     ok($resp->{'success'}, 'turn is successful when valid speed is passed');
-    ok(defined $resp->{'position'}, 'turn, when successful, returns the starting position of each motor');
+    ok(defined $resp->{'motors'}, 'turn, when successful, returns the starting position of each motor');
 
     $ev3mock->reset_mock('get_tacho_position'); # reset get_tacho_position back to default
 }
