@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Simple Client</title>
+        <style>
+            body {
+                position: relative;
+            }
+            #ipcontainer {
+                position: absolute;
+            }
+            #buttoncontainer {
+                position: absolute;
+            }
+            button {
+                font-size: 3em;
+                display: block;
+                position: absolute;
+            }
+            #up {
+                top: 100px;
+                left: 100px;
+            }
+            #left {
+                top: 200px;
+                left: 0px;
+            }
+            #right {
+                top: 200px;
+                left: 200px;
+            }
+            #down {
+                top: 300px;
+                left: 100px;
+            }
+            #stop {
+                top: 200px;
+                left: 100px;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="ipcontainer">
+            IP <input type="text" id="ip">
+        </div>
+        <div id="buttoncontainer">
+            <button type="button" id="stop">&otimes;</button>
+            <button type="button"id="up">&uArr;</button>
+            <button type="button" id="left">&lArr;</button>
+            <button type="button" id="right">&rArr;</button>
+            <button type="button" id="down">&dArr;</button>
+        </div>
+        <script src="jquery.min.js"></script>
+        <script>
+            var ip;
+            var moveSpeed = 400;
+            var turnSpeed = 100;
+
+            $('#ip').keyup(function () {
+                ip = $('#ip').val();
+                console.log(ip);
+            });
+
+            $('#up').click(function () {
+                $.ajax({
+                    url: 'http://'.concat(ip, '/move'),
+                    data: { speed: moveSpeed },    
+                    method: 'POST'
+                });
+            });
+
+            $('#down').click(function () {
+                $.ajax({
+                    url: 'http://'.concat(ip, '/move'),
+                    data: { speed: -moveSpeed },    
+                    method: 'POST'
+                });
+            });
+
+            $('#left').click(function () {
+                $.ajax({
+                    url: 'http://'.concat(ip, '/turn'),
+                    data: { speed: turnSpeed },    
+                    method: 'POST'
+                });
+            });
+
+            $('#right').click(function () {
+                $.ajax({
+                    url: 'http://'.concat(ip, '/turn'),
+                    data: { speed: -turnSpeed },    
+                    method: 'POST'
+                });
+            });
+
+            $('#stop').click(function () {
+                $.ajax({
+                    url: 'http://'.concat(ip, '/stop'),
+                    method: 'POST'
+                });
+            });
+        </script>
+    </body>
+</html>
