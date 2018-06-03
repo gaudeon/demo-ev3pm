@@ -161,6 +161,15 @@ sub __hello__meta {
     };
 }
 
+sub __hello {
+    my $self    = shift;
+    my $request = shift;
+
+    return {
+        hello => time,
+    };
+}
+
 sub __available_motors__meta {
     return {
         description => 'Returns list of available motors',
@@ -181,7 +190,7 @@ sub __available_motors {
         if ($type_inx != $ev3::TACHO_TYPE__NONE_) {
             my $port_type = ev3::ev3_tacho_type ( $type_inx );
             my $port_name = ev3::ev3_tacho_port_name( $i );
-            $resp{"motor - $i"} = {
+            push @{$resp{"motors"}}, {
                 sequence_number => $i,
                 port_type       => $port_type,
                 port_name       => $port_name,
@@ -192,22 +201,8 @@ sub __available_motors {
     return \%resp;
 }
 
-
-sub __hello {
-    my $self    = shift;
-    my $request = shift;
-
-    return {
-        hello => time,
-    };
-}
-
 sub __position__meta {
     my $self = shift;
-
-    my ($r_motor, $l_motor) = @{ $self->_large_motors };
-    $r_motor = defined $r_motor ? $r_motor : -1;
-    $l_motor = defined $l_motor ? $l_motor : -1;
 
     return {
         description => 'Get motor position',
@@ -226,8 +221,11 @@ sub __position {
     my $self    = shift;
     my $request = shift;
 
+    my $position;
+    ev3::get_tacho_position($request->{'sequence_number'}, $position);
+
     return {
-        position => ev3::get_tacho_position($request->{'sequence_number'}),
+        position => $position,
     };
 }
 
