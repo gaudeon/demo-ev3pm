@@ -10,6 +10,7 @@ use CGI::Lite;
 use Data::Debug;
 use JSON::XS;
 use Data::Dumper;
+use File::Spec;
 
 use ev3;
 
@@ -17,6 +18,10 @@ sub new {
     my $class = shift;
     my $args  = ref $_[0] eq 'HASH' ? $_[0] : {};
     $args->{'port'} //= 8080;
+    $args->{'min_servers'} //= 1;
+    $args->{'max_servers'} //= 1;
+    $args->{'min_spare_servers'} //= 0;
+    $args->{'max_spare_servers'} //= 0;
 
     my $self = bless $args, $class;
 
@@ -35,7 +40,11 @@ sub run {
     $self->{'__listening'} = 1;
 
     return $self->SUPER::run({
-        port => $self->{'port'},
+        port              => $self->{'port'},
+        min_servers       => $self->{'min_servers'},
+        max_servers       => $self->{'max_servers'},
+        min_spare_servers => $self->{'min_spare_servers'},
+        max_spare_servers => $self->{'max_spare_servers'},
     });
 }
 
@@ -190,6 +199,7 @@ sub __available_motors {
         if ($type_inx != $ev3::TACHO_TYPE__NONE_) {
             my $port_type = ev3::ev3_tacho_type ( $type_inx );
             my $port_name = ev3::ev3_tacho_port_name( $i );
+
             push @{$resp{"motors"}}, {
                 sequence_number => $i,
                 port_type       => $port_type,
@@ -201,13 +211,48 @@ sub __available_motors {
     return \%resp;
 }
 
+sub __max_speed__meta {
+    my $self = shift;
+
+    return {
+        description => 'Get motor max speed in tacho counds per second',
+        sequence_number  => {
+            description => 'The sequence number the motor is identified as',
+            test        => sub {
+                my $data = shift;
+
+                die "Not a valid sequence_number" unless defined $data && $data =~ /^\d+$/;
+            },
+        },
+    };
+}
+
+sub __max_speed {
+    my $self    = shift;
+    my $request = shift;
+    my $sn      = $request->{'sequence_number'};
+
+    my $max_speed_file = File::Spec->catfile($self->_tacho_sys_dir, "motor$sn", 'max_speed');
+
+    open my $fh, '<', $max_speed_file || die "Could not open $max_speed_file $1";
+    my @lines = <$fh>;
+    close $fh;
+
+    my $data = join "\n", @lines;
+    chomp $data;
+
+    return {
+        speed => $data,
+    };
+}
+
 sub __position__meta {
     my $self = shift;
 
     return {
         description => 'Get motor position',
         sequence_number  => {
-            description => 'The sequence number the motor is identified as',,
+            description => 'The sequence number the motor is identified as',
             test        => sub {
                 my $data = shift;
 
@@ -246,24 +291,33 @@ sub __move {
     my $self    = shift;
     my $request = shift;
 
-    my $position = {};
+    my @motors;
     for my $sn ( @{ $self->_large_motors } ) {
+        $self->_debug_trace("Setting movement for motor $sn" . " at line " . __LINE__);
+
         # set the speed
         ev3::set_tacho_duty_cycle_sp( $sn, $request->{'speed'} );
+        $self->_debug_trace("Speed set to $request->{speed} for motor $sn" . " at line " . __LINE__);
 
         # disable ramp up and ramp down
         ev3::set_tacho_ramp_up_sp( $sn, 0 );
         ev3::set_tacho_ramp_down_sp( $sn, 0 );
+        $self->_debug_trace("Ramp up / Ramp down set to zero for motor $sn" . " at line " . __LINE__);
 
         # track the starting position of each motor
-        $position->{$sn} = ev3::get_tacho_position( $sn );
+        my $position = ev3::get_tacho_position( $sn );
+        $self->_debug_trace("Current position at $position for motor $sn" . " at line " . __LINE__);
 
-        # run command
         ev3::set_tacho_command_inx( $sn, $ev3::TACHO_RUN_FOREVER );
+
+        push @motors, {
+            sequence_number => $sn,
+            position        => $position,
+        };
     }
 
     return {
-        position => $position,
+        motors => \@motors,
     };
 }
 
@@ -444,7 +498,7 @@ sub _ev3_init {
             sleep 1;
         }
 
-        {
+        +{
             tacho_count => $tacho_count,
         };
     };
