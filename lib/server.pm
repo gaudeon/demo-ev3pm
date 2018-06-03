@@ -9,6 +9,7 @@ use parent qw(Net::Server::HTTP);
 use CGI::Lite;
 use Data::Debug;
 use JSON::XS;
+use Data::Dumper;
 
 use ev3;
 
@@ -42,6 +43,8 @@ sub process_http_request {
     my $self = shift;
     my $args = shift || {}; # if we are manually calling this method
 
+    $self->_debug_trace("Start process_http_request " . " at line " . __LINE__);
+
     my ($path, $method, $form);
     if ($self->is_listening) {
         $path   = $ENV{'PATH_INFO'};
@@ -64,12 +67,16 @@ sub process_http_request {
         };
     }
 
-    $response->{'_request'} //= {
-        path   => $path,
-        method => $method,
-        env    => \%ENV,
-        params => $form,
-    };
+    if ($form->{'debug'}) {
+        $response->{'_request'} //= {
+            path   => $path,
+            method => $method,
+            env    => \%ENV,
+            params => $form,
+        };
+
+        $response->{'_trace'} //= $self->_debug_trace;
+    }
 
     $response = $self->json->encode($response);
 
@@ -117,7 +124,13 @@ sub run_method {
     my $method  = shift;
     my $request = shift;
 
+    $self->_debug_trace("Start run_method $method " . " at line " . __LINE__);
+
     if (my $method_sub = $self->can("__$method")) {
+        my $init_info = $self->_ev3_init;
+
+        $self->_debug_trace("EV3 initialized, tacho count $init_info->{tacho_count} " . " at line " . __LINE__) if $init_info;
+
         my $resp = eval { $self->$method_sub($request) } || $@;
 
         if (ref $resp) {
@@ -130,6 +143,8 @@ sub run_method {
                 error   => $resp,
             };
         }
+
+        $self->_ev3_uninit;
     }
 
     return {
@@ -145,6 +160,38 @@ sub __hello__meta {
         description => 'Simple hello method for testing purposes',
     };
 }
+
+sub __available_motors__meta {
+    return {
+        description => 'Returns list of available motors',
+    };
+}
+
+sub __available_motors {
+    my $self    = shift;
+    my $request = shift;
+
+    $self->_debug_trace("Start __available_motors " . " at line " . __LINE__);
+
+    my %resp;
+    for ( my $i = 0; $i < $ev3::TACHO_DESC__LIMIT_; $i++ ) {
+        my $type_inx = ev3::ev3_tacho_desc_type_inx( $i );
+        $self->_debug_trace("Tacho type $type_inx found for sequence number $i" . " at line " . __LINE__) if $type_inx != $ev3::TACHO_TYPE__NONE_;
+
+        if ($type_inx != $ev3::TACHO_TYPE__NONE_) {
+            my $port_type = ev3::ev3_tacho_type ( $type_inx );
+            my $port_name = ev3::ev3_tacho_port_name( $i );
+            $resp{'motor - $i'} = {
+                sequence_number => $i,
+                port_type       => $port_type,
+                port_name       => $port_name,
+            };
+        }
+    }
+
+    return \%resp;
+}
+
 
 sub __hello {
     my $self    = shift;
@@ -380,6 +427,17 @@ sub __stop {
 
 ####---- private subs ----####
 
+sub _debug_trace {
+    my $self = shift;
+    my $line = shift;
+
+    $self->{'__trace'} //= [];
+
+    push @{$self->{'__trace'}}, $line if $line;
+
+    return $self->{'__trace'};
+}
+
 sub _build_routing {
     my $self = shift;
 
@@ -470,20 +528,37 @@ sub _scrub_meta {
     return $data;
 }
 
+sub _tacho_sys_dir { $ev3::TACHO_DIR }
+
+sub _ev3_init {
+    my $self = shift;
+
+    return $self->{'_ev3_init'} //= do {
+        ev3::ev3_init() != -1 || die 'failed to initialized ev3';
+
+        my $tacho_count;
+        while ( $tacho_count = ev3::ev3_tacho_init() < 1 ) {
+            sleep 1;
+        }
+
+        {
+            tacho_count => $tacho_count,
+        };
+    };
+}
+
+sub _ev3_uninit {
+    my $self = shift;
+
+    if ($self->{'_ev3_init'}) {
+        ev3::ev3_unint();
+    }
+}
+
 sub _call_ev3 {
     my $self   = shift;
     my $method = shift;
     my $args   = shift || [];
-
-    $self->{'_ev3_initialized'} //= do {
-        ev3::ev3_init() != -1 || die 'failed to initialized ev3';
-
-        while ( ev3::ev3_tacho_init() < 1 ) {
-            sleep 1;
-        }
-
-        1;
-    };
 
     die 'args are not an arrayref' unless $args && ref $args eq 'ARRAY';
 

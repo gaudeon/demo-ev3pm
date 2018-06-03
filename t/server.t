@@ -17,7 +17,7 @@ use JSON::XS;
 
 use ev3mock;
 
-use Test::More tests => 34;
+use Test::More tests => 35;
 
 my $ev3mock = ev3mock->new();
 
@@ -67,6 +67,14 @@ HELLO: {
 
 HAS_LARGE_MOTORS_SET_FALSE: {
     ok(! $server->_has_large_motors_set, '_has_large_motors_set is false');
+}
+
+AVAILABLE_MOTORS: {
+    $resp = decode_json($server->process_http_request({
+        method => "available_motors",
+    }));
+
+    ok($resp->{'success'}, 'available_motors method returned successfully');
 }
 
 SET_LEFT_MOTOR: {

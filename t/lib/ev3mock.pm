@@ -94,6 +94,14 @@ sub _mock_defaults {
         ev3_tacho_desc_type_inx => sub {
             return $ev3::LEGO_EV3_L_MOTOR;
         },
+
+        ev3_tacho_type => sub {
+            return 'type';
+        },
+
+        ev3_tacho_port_name => sub {
+            return 'name';
+        },
     };
 }
 
