@@ -90,6 +90,7 @@ sub process_http_request {
     $response = $self->json->encode($response);
 
     if ($self->is_listening) {
+        print "Access-Control-Allow-Origin: *\n";
         print "Content-type: text/json\n\n";
         print $response;
     }
