@@ -3,7 +3,6 @@ package server;
 use strict;
 use warnings;
 
-#use parent qw(Net::Server::PreForkSimple);
 use parent qw(Net::Server::HTTP);
 
 use CGI::Lite;
@@ -52,6 +51,7 @@ sub process_http_request {
     my $self = shift;
     my $args = shift || {}; # if we are manually calling this method
 
+    $self->_reset_trace;
     $self->_debug_trace("Start process_http_request " . " at line " . __LINE__);
 
     my ($path, $method, $form);
@@ -281,7 +281,7 @@ sub __move__meta {
             test        => sub {
                 my $data = shift;
 
-                die "Not a valid speed" unless $data && $data =~ /^\d+$/ && $data >= -100 && $data <= 100;
+                die "Not a valid speed" unless $data && $data =~ /^[-]?\d+$/;
             },
         },
     };
@@ -296,7 +296,7 @@ sub __move {
         $self->_debug_trace("Setting movement for motor $sn" . " at line " . __LINE__);
 
         # set the speed
-        ev3::set_tacho_duty_cycle_sp( $sn, $request->{'speed'} );
+        ev3::set_tacho_speed_sp( $sn, $request->{'speed'} );
         $self->_debug_trace("Speed set to $request->{speed} for motor $sn" . " at line " . __LINE__);
 
         # disable ramp up and ramp down
@@ -323,13 +323,13 @@ sub __move {
 
 sub __turn__meta {
     return {
-        description => 'Turn the robot some amount based on motor degrees and at some speed',
+        description => 'Turn the robot based on some defined speed speed',
         speed => {
-            description => 'How fast, between -100 and 100, to move the robot.',
+            description => 'How fast to turn the robot.',
             test        => sub {
                 my $data = shift;
 
-                die "Not a valid speed" unless defined $data && $data =~ /^\d+$/ && $data >= -100 && $data <= 100;
+                die "Not a valid speed" unless defined $data && $data =~ /^[-]?\d+$/;
             },
         },
     };
@@ -339,28 +339,36 @@ sub __turn {
     my $self    = shift;
     my $request = shift;
 
-    my $position = {};
+    my @motors;
     my $speed = $request->{'speed'}; # alternate speed between positive and negative values for each motor
     for my $sn ( @{ $self->_large_motors } ) {
+        $self->_debug_trace("Setting turning for motor $sn" . " at line " . __LINE__);
+
         # set the speed
-        ev3::set_tacho_duty_cycle_sp( $sn, $speed );
+        ev3::set_tacho_speed_sp( $sn, $speed );
+        $self->_debug_trace("Speed set to $speed for motor $sn" . " at line " . __LINE__);
 
         # disable ramp up and ramp down
         ev3::set_tacho_ramp_up_sp( $sn, 0 );
         ev3::set_tacho_ramp_down_sp( $sn, 0 );
+        $self->_debug_trace("Ramp up / Ramp down set to zero for motor $sn" . " at line " . __LINE__);
 
         # track the starting position of each motor
-        $position->{$sn} = ev3::get_tacho_position( $sn );
+        my $position = ev3::get_tacho_position( $sn );
+        $self->_debug_trace("Current position at $position for motor $sn" . " at line " . __LINE__);
 
-        # run command
         ev3::set_tacho_command_inx( $sn, $ev3::TACHO_RUN_FOREVER );
 
-        # since we are turning speed must be negated so that the next motors speed is opposite this motor's speed
+        push @motors, {
+            sequence_number => $sn,
+            position        => $position,
+        };
+
         $speed = -$speed;
     }
 
     return {
-        position => $position,
+        motors => \@motors,
     };
 }
 
@@ -383,6 +391,12 @@ sub __stop {
 }
 
 ####---- private subs ----####
+
+sub _reset_trace {
+    my $self = shift;
+
+    $self->{'__trace'} = [];
+}
 
 sub _debug_trace {
     my $self = shift;
