@@ -181,7 +181,7 @@ sub __available_motors {
         if ($type_inx != $ev3::TACHO_TYPE__NONE_) {
             my $port_type = ev3::ev3_tacho_type ( $type_inx );
             my $port_name = ev3::ev3_tacho_port_name( $i );
-            $resp{'motor - $i'} = {
+            $resp{"motor - $i"} = {
                 sequence_number => $i,
                 port_type       => $port_type,
                 port_name       => $port_name,
